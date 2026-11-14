@@ -16,13 +16,13 @@ jobs:
   build:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build universal app and disk image
         run: UNIVERSAL=1 bash build.sh
 
       - name: Keep the build as a downloadable artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: LidControl
           path: Lid Control.dmg
