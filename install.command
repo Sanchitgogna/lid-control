@@ -15,5 +15,5 @@ xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
 open "$DEST"
 echo
 echo "Lid Control is installed. Look for the laptop icon in your menu bar."
-echo "Tip: turn on \"Don't ask for my password\" in the panel, then press ⌥⌘L anywhere to flip the lid setting.\"
+echo "Tip: turn on \"Don't ask for my password\" in the panel, then press ⌥⌘L anywhere to flip the lid setting."
 echo "     Turn on \"Start at login\" in the panel to launch it automatically."
