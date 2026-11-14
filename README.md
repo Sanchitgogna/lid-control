@@ -19,10 +19,13 @@
 ## Features
 
 - **Stay on when the lid is closed:** keep music, downloads or a server running with the lid shut, even on battery. The menu bar icon turns into a ☕ while it's on.
+- **Safety cut-off:** switches "Stay on" off and sleeps the Mac if the battery runs low (10–30%, you choose) or the Mac gets hot.
+- **Quit reminder:** warns you if you quit while "Stay on" is active, and reminds you on launch if it was left on.
 - **⌥⌘L keyboard shortcut:** flip the lid setting from any app, with an on-screen confirmation.
 - **Power buttons:** Sleep, Screen off, Restart and Shut Down.
-- **Schedule:** turn the Mac on and shut it down at set times on chosen days.
+- **Schedule:** wake or turn the Mac on and shut it down at set times on chosen days.
 - **No password prompts (optional):** enter your password once and lid and schedule changes apply instantly.
+- **Start at login** and **update alerts** when a new version is released here.
 
 ## Install
 
@@ -69,11 +72,11 @@ cd lid-control
 bash install.command
 ```
 
-`install.command` builds the app, copies it to `/Applications`, and can add it to your login items. `bash build.sh` only builds `Lid Control.app` and `Lid Control.dmg` in the project folder.
+`install.command` builds the app, copies it to `/Applications` and opens it. `bash build.sh` only builds `Lid Control.app` and `Lid Control.dmg` in the project folder.
 
 ## Uninstall
 
-1. In the panel, turn **off** "Stay on when lid is closed" and "Don't ask for my password".
+1. In the panel, turn **off** "Stay on when lid is closed", "Don't ask for my password" and "Start at login".
 2. Quit Lid Control and drag it from Applications to the Bin.
 
 ## Releasing a new version (maintainers)

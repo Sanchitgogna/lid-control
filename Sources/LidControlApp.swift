@@ -1,6 +1,9 @@
 import SwiftUI
 import AppKit
 import Carbon.HIToolbox
+import IOKit
+import IOKit.ps
+import ServiceManagement
 
 // MARK: - App
 
@@ -59,6 +62,86 @@ enum Shell {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
         return appleScript("do shell script \"\(escaped)\" with administrator privileges")
+    }
+}
+
+// MARK: - System readings
+
+enum SystemInfo {
+    struct Battery { let percent: Int; let onBattery: Bool }
+
+    /// Internal battery state, or nil on Macs without a battery.
+    static func battery() -> Battery? {
+        guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let list = IOPSCopyPowerSourcesList(info)?.takeRetainedValue() as? [CFTypeRef]
+        else { return nil }
+        for source in list {
+            guard let d = IOPSGetPowerSourceDescription(info, source)?.takeUnretainedValue() as? [String: Any],
+                  (d[kIOPSTypeKey] as? String) == kIOPSInternalBatteryType
+            else { continue }
+            let current = d[kIOPSCurrentCapacityKey] as? Int ?? 0
+            let max = d[kIOPSMaxCapacityKey] as? Int ?? 100
+            let state = d[kIOPSPowerSourceStateKey] as? String
+            return Battery(percent: max > 0 ? current * 100 / max : current,
+                           onBattery: state == kIOPSBatteryPowerValue)
+        }
+        return nil
+    }
+
+    /// True when the laptop lid is shut.
+    static var lidClosed: Bool {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
+        guard service != 0 else { return false }
+        defer { IOObjectRelease(service) }
+        let value = IORegistryEntryCreateCFProperty(service, "AppleClamshellState" as CFString,
+                                                    kCFAllocatorDefault, 0)?.takeRetainedValue()
+        return (value as? Bool) ?? false
+    }
+
+    static var isHot: Bool {
+        let t = ProcessInfo.processInfo.thermalState
+        return t == .serious || t == .critical
+    }
+
+    /// Reads "SleepDisabled" from `pmset -g`.
+    static var sleepDisabled: Bool {
+        Shell.run("/usr/bin/pmset", ["-g"]).split(separator: "\n").contains { line in
+            let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            return parts.count >= 2 && parts[0] == "SleepDisabled" && parts[1] == "1"
+        }
+    }
+}
+
+// MARK: - Updates
+
+enum Updates {
+    static let repo = "Sanchitgogna/lid-control"
+    static let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+
+    struct Release: Decodable {
+        let tag_name: String
+        let html_url: String
+    }
+
+    /// Latest release on GitHub, as (version, page URL).
+    static func latest() async throws -> (version: String, url: URL) {
+        var req = URLRequest(url: URL(string: "https://api.github.com/repos/\(repo)/releases/latest")!)
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        req.timeoutInterval = 15
+        let (data, _) = try await URLSession.shared.data(for: req)
+        let r = try JSONDecoder().decode(Release.self, from: data)
+        let version = r.tag_name.hasPrefix("v") ? String(r.tag_name.dropFirst()) : r.tag_name
+        return (version, URL(string: r.html_url) ?? URL(string: "https://github.com/\(repo)/releases")!)
+    }
+
+    static func isNewer(_ a: String, than b: String) -> Bool {
+        let x = a.split(separator: ".").map { Int($0) ?? 0 }
+        let y = b.split(separator: ".").map { Int($0) ?? 0 }
+        for i in 0..<max(x.count, y.count) {
+            let p = i < x.count ? x[i] : 0, q = i < y.count ? y[i] : 0
+            if p != q { return p > q }
+        }
+        return false
     }
 }
 
@@ -211,13 +294,161 @@ final class PowerController: ObservableObject {
         }
     }
 
+    // Safety cut-off for "Stay on"
+    @Published var safetyEnabled = UserDefaults.standard.object(forKey: "safetyEnabled") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(safetyEnabled, forKey: "safetyEnabled") }
+    }
+    @Published var batteryLimit = UserDefaults.standard.object(forKey: "batteryLimit") as? Int ?? 15 {
+        didSet { UserDefaults.standard.set(batteryLimit, forKey: "batteryLimit") }
+    }
+    static let batteryLimitChoices = [10, 15, 20, 30]
+    private var warnedSafetyNeedsPermission = false
+
+    // Start at login
+    @Published var startAtLogin = SMAppService.mainApp.status == .enabled
+
+    // Updates
+    @Published var availableUpdate: String?
+    @Published var updateURL: URL?
+    private var lastUpdateCheck = Date.distantPast
+
     /// Shown in the UI. Keep in sync with updateHotKey().
     static let shortcutLabel = "⌥⌘L"
     private var hotKey: HotKey?
+    private var pollTask: Task<Void, Never>?
 
     init() {
         refresh()
         updateHotKey()
+
+        // Remind the user if "Stay on" was left on (e.g. after quitting or restarting).
+        if sleepDisabled {
+            message = "Heads up: “Stay on” was already ON when Lid Control started."
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                HUD.show(symbol: "cup.and.saucer.fill", title: "Stay on is still ON",
+                         subtitle: "Your Mac won't sleep when the lid closes")
+            }
+        }
+
+        // Every 5 s: keep the icon in sync and run the safety check.
+        // Once a day: look for a new version.
+        pollTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            while !Task.isCancelled {
+                self?.tick()
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+            }
+        }
+    }
+
+    private func tick() {
+        let current = SystemInfo.sleepDisabled
+        if current != sleepDisabled { sleepDisabled = current }
+        if !sleepDisabled { warnedSafetyNeedsPermission = false }
+        safetyCheck()
+        if Date().timeIntervalSince(lastUpdateCheck) > 24 * 60 * 60 {
+            lastUpdateCheck = Date()
+            Task { await checkForUpdates(userInitiated: false) }
+        }
+    }
+
+    // MARK: Safety cut-off
+
+    /// Turns "Stay on" off when the battery is low or the Mac is hot,
+    /// then sleeps the Mac if the lid is closed.
+    private func safetyCheck() {
+        guard safetyEnabled, sleepDisabled else { return }
+
+        let reason: String
+        if SystemInfo.isHot {
+            reason = "Your Mac was getting hot"
+        } else if let b = SystemInfo.battery(), b.onBattery, b.percent <= batteryLimit {
+            reason = "Battery was at \(b.percent)%"
+        } else {
+            return
+        }
+
+        // Must work unattended, so it can't show a password prompt.
+        guard passwordFree, PasswordFree.run(["-a", "disablesleep", "0"]) else {
+            if !warnedSafetyNeedsPermission {
+                warnedSafetyNeedsPermission = true
+                message = "\(reason). Turn on “Don't ask for my password” so Lid Control can switch “Stay on” off by itself."
+                HUD.show(symbol: "exclamationmark.triangle.fill", title: "Turn off “Stay on”",
+                         subtitle: reason)
+            }
+            return
+        }
+
+        sleepDisabled = SystemInfo.sleepDisabled
+        message = "“Stay on” was turned off automatically. \(reason)."
+        HUD.show(symbol: "exclamationmark.triangle.fill", title: "Stay on turned OFF", subtitle: reason)
+        if SystemInfo.lidClosed {
+            Shell.run("/usr/bin/pmset", ["sleepnow"])
+        }
+    }
+
+    // MARK: Start at login
+
+    func setStartAtLogin(_ on: Bool) {
+        do {
+            if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+        } catch {
+            message = "Couldn't change Start at login: \(error.localizedDescription)"
+        }
+        let status = SMAppService.mainApp.status
+        startAtLogin = status == .enabled
+        if status == .requiresApproval {
+            message = "Allow Lid Control in System Settings → General → Login Items."
+            SMAppService.openSystemSettingsLoginItems()
+        }
+    }
+
+    // MARK: Updates
+
+    func checkForUpdates(userInitiated: Bool) async {
+        lastUpdateCheck = Date()
+        do {
+            let latest = try await Updates.latest()
+            if Updates.isNewer(latest.version, than: Updates.currentVersion) {
+                availableUpdate = latest.version
+                updateURL = latest.url
+            } else {
+                availableUpdate = nil
+                if userInitiated { message = "You're up to date (version \(Updates.currentVersion))." }
+            }
+        } catch {
+            if userInitiated { message = "Couldn't check for updates. Are you online?" }
+        }
+    }
+
+    func openUpdate() {
+        if let updateURL { NSWorkspace.shared.open(updateURL) }
+    }
+
+    // MARK: Quit
+
+    /// Warns before quitting while "Stay on" is still active.
+    func quit() {
+        if sleepDisabled {
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = "“Stay on when lid is closed” is still ON"
+            alert.informativeText = "If you quit, your Mac will keep running with the lid closed and there'll be no menu bar icon to remind you."
+            alert.addButton(withTitle: "Turn Off and Quit")
+            alert.addButton(withTitle: "Keep On and Quit")
+            alert.addButton(withTitle: "Cancel")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                setStayAwakeWithLidClosed(false)
+                if sleepDisabled { return } // password cancelled — don't quit
+            case .alertSecondButtonReturn:
+                break
+            default:
+                return
+            }
+        }
+        NSApp.terminate(nil)
     }
 
     private func updateHotKey() {
@@ -261,11 +492,8 @@ final class PowerController: ObservableObject {
 
     func refresh() {
         passwordFree = PasswordFree.isEnabled
-        let settings = Shell.run("/usr/bin/pmset", ["-g"])
-        sleepDisabled = settings.split(separator: "\n").contains { line in
-            let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
-            return parts.count >= 2 && parts[0] == "SleepDisabled" && parts[1] == "1"
-        }
+        sleepDisabled = SystemInfo.sleepDisabled
+        startAtLogin = SMAppService.mainApp.status == .enabled
 
         let sched = Shell.run("/usr/bin/pmset", ["-g", "sched"])
         let lines = sched.split(separator: "\n")
@@ -411,6 +639,27 @@ struct MenuContent: View {
                         .opacity(power.shortcutEnabled ? 1 : 0.4)
                 }
                 .padding(.horizontal, 4)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Toggle("Safety cut-off below", isOn: $power.safetyEnabled)
+                            .toggleStyle(.checkbox)
+                        Spacer()
+                        Picker("", selection: $power.batteryLimit) {
+                            ForEach(PowerController.batteryLimitChoices, id: \.self) { Text("\($0)%").tag($0) }
+                        }
+                        .labelsHidden()
+                        .fixedSize()
+                        .disabled(!power.safetyEnabled)
+                    }
+                    Text(power.safetyEnabled && !power.passwordFree
+                         ? "Needs “Don't ask for my password” to work."
+                         : "Turns “Stay on” off on low battery or if the Mac gets hot.")
+                        .font(.caption)
+                        .foregroundStyle(power.safetyEnabled && !power.passwordFree ? .orange : .secondary)
+                }
+                .padding(.horizontal, 4)
+                .padding(.bottom, 4)
             } label: { Label("Lid", systemImage: "laptopcomputer") }
 
             // Power now
@@ -456,6 +705,10 @@ struct MenuContent: View {
                         }
                         Button("Clear") { power.cancelSchedule() }
                     }
+                    Text("On Apple Silicon Macs, “Turn on” wakes the Mac from sleep but can't start it from fully shut down.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(power.scheduleSummary)
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
@@ -481,15 +734,45 @@ struct MenuContent: View {
                 }
                 .toggleStyle(.switch)
                 .padding(4)
-            } label: { Label("Password", systemImage: "key.fill") }
+
+                Toggle(isOn: Binding(
+                    get: { power.startAtLogin },
+                    set: { power.setStartAtLogin($0) })
+                ) {
+                    Text("Start at login")
+                }
+                .toggleStyle(.switch)
+                .padding(4)
+            } label: { Label("Settings", systemImage: "gearshape.fill") }
+
+            if let version = power.availableUpdate {
+                HStack {
+                    Image(systemName: "arrow.down.circle.fill").foregroundStyle(.blue)
+                    Text("Version \(version) is available")
+                    Spacer()
+                    Button("Download") { power.openUpdate() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                }
+                .padding(8)
+                .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+            }
 
             if let msg = power.message {
                 Text(msg).font(.caption).foregroundStyle(.secondary)
             }
 
             HStack {
+                Text("Version \(Updates.currentVersion)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Check for updates") {
+                    Task { await power.checkForUpdates(userInitiated: true) }
+                }
+                .buttonStyle(.link)
+                .font(.caption)
                 Spacer()
-                Button("Quit Lid Control") { NSApp.terminate(nil) }
+                Button("Quit") { power.quit() }
             }
         }
         .padding(14)
