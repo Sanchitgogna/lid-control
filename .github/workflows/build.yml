@@ -1,0 +1,38 @@
+name: Build
+
+# Every push to main: compile to make sure it still builds.
+# Every tag like v1.2.0: build and publish a GitHub Release with the .dmg attached.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build universal app and disk image
+        run: UNIVERSAL=1 bash build.sh
+
+      - name: Keep the build as a downloadable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LidControl
+          path: Lid Control.dmg
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp "Lid Control.dmg" LidControl.dmg
+          gh release create "$GITHUB_REF_NAME" LidControl.dmg \
+            --title "Lid Control ${GITHUB_REF_NAME#v}" \
+            --generate-notes
