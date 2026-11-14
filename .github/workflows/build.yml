@@ -1,13 +1,19 @@
 name: Build
 
-# Every push to main: compile to make sure it still builds.
-# Every tag like v1.2.0: build and publish a GitHub Release with the .dmg attached.
+# Every push to main or pull request: compile to make sure it still builds.
+# Release: Actions tab → Build → "Run workflow" → enter a version (e.g. 1.3.0),
+#          or push a tag like v1.3.0. Either one publishes a GitHub Release with the .dmg.
 on:
   push:
     branches: [main]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 1.3.0 (leave empty to just build)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -28,11 +34,14 @@ jobs:
           path: Lid Control.dmg
 
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.version != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then TAG="$GITHUB_REF_NAME"; else TAG="v${INPUT_VERSION#v}"; fi
           cp "Lid Control.dmg" LidControl.dmg
-          gh release create "$GITHUB_REF_NAME" LidControl.dmg \
-            --title "Lid Control ${GITHUB_REF_NAME#v}" \
+          gh release create "$TAG" LidControl.dmg \
+            --target "$GITHUB_SHA" \
+            --title "Lid Control ${TAG#v}" \
             --generate-notes

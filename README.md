@@ -78,11 +78,9 @@ bash install.command
 
 ## Releasing a new version (maintainers)
 
-Bump `CFBundleShortVersionString` in `Info.plist`, then push a tag:
-
-```bash
-git tag v1.3.0 && git push origin v1.3.0
-```
+1. Bump `CFBundleShortVersionString` in `Info.plist` and push to `main`.
+2. On GitHub, open **Actions → Build → Run workflow**, enter the version (e.g. `1.3.0`) and click **Run workflow**.
+   Pushing a tag such as `v1.3.0` works too.
 
 GitHub Actions builds a universal app on macOS and publishes a release with `LidControl.dmg` attached. The download link above always points at the newest release.
 
