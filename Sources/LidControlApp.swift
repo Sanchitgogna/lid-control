@@ -285,7 +285,22 @@ struct HUDView: View {
 final class PowerController: ObservableObject {
     @Published var sleepDisabled = false
     @Published var scheduleSummary = ""
-    @Published var message: String?
+    @Published var hasSchedule = false
+    /// Short status line under the panel; fades out after a few seconds.
+    @Published var message: String? {
+        didSet { scheduleMessageClear() }
+    }
+    private var messageClearTask: Task<Void, Never>?
+
+    private func scheduleMessageClear() {
+        messageClearTask?.cancel()
+        guard message != nil else { return }
+        messageClearTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.message = nil
+        }
+    }
     @Published var passwordFree = false
     @Published var shortcutEnabled = UserDefaults.standard.object(forKey: "shortcutEnabled") as? Bool ?? true {
         didSet {
@@ -500,6 +515,7 @@ final class PowerController: ObservableObject {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         scheduleSummary = lines.isEmpty ? "No schedule set." : lines.joined(separator: "\n")
+        hasSchedule = sched.contains("Repeating")
     }
 
     // Lid-closed behaviour
@@ -509,8 +525,8 @@ final class PowerController: ObservableObject {
             message = err
         } else {
             message = on
-                ? "Your Mac will stay on when the lid is closed."
-                : "Your Mac will sleep when the lid is closed (normal behaviour)."
+                ? "Your Mac will stay on with the lid closed."
+                : "Your Mac will sleep when the lid closes."
         }
         refresh()
     }
@@ -583,12 +599,16 @@ enum Weekday: Int, CaseIterable, Hashable {
 
     var pmsetLetter: String { ["M", "T", "W", "R", "F", "S", "U"][rawValue] }
     var short: String { ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"][rawValue] }
+    var letter: String { ["M", "T", "W", "T", "F", "S", "S"][rawValue] }
 }
 
 // MARK: - UI
 
 struct MenuContent: View {
     @EnvironmentObject var power: PowerController
+    @State private var page: Page = .main
+
+    enum Page { case main, schedule, settings }
 
     @AppStorage("schedOn") private var schedOn = false
     @AppStorage("schedOff") private var schedOff = false
@@ -601,183 +621,213 @@ struct MenuContent: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text("Lid Control").font(.headline)
-                Spacer()
-                Button { power.refresh() } label: { Image(systemName: "arrow.clockwise") }
-                    .buttonStyle(.borderless)
-                    .help("Refresh status")
-            }
-
-            // Lid
-            GroupBox {
-                Toggle(isOn: Binding(
-                    get: { power.sleepDisabled },
-                    set: { power.setStayAwakeWithLidClosed($0) })
-                ) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Stay on when lid is closed")
-                        Text(power.sleepDisabled
-                             ? "ON — Mac keeps running with the lid shut. Don't put it in a bag."
-                             : "OFF — Mac sleeps when the lid is shut (normal).")
-                            .font(.caption)
-                            .foregroundStyle(power.sleepDisabled ? .orange : .secondary)
-                    }
-                }
-                .toggleStyle(.switch)
-                .padding(4)
-
-                HStack {
-                    Toggle("Keyboard shortcut", isOn: $power.shortcutEnabled)
-                        .toggleStyle(.checkbox)
-                    Spacer()
-                    Text(PowerController.shortcutLabel)
-                        .font(.system(.body, design: .rounded).weight(.semibold))
-                        .padding(.horizontal, 8).padding(.vertical, 2)
-                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
-                        .opacity(power.shortcutEnabled ? 1 : 0.4)
-                }
-                .padding(.horizontal, 4)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack {
-                        Toggle("Safety cut-off below", isOn: $power.safetyEnabled)
-                            .toggleStyle(.checkbox)
-                        Spacer()
-                        Picker("", selection: $power.batteryLimit) {
-                            ForEach(PowerController.batteryLimitChoices, id: \.self) { Text("\($0)%").tag($0) }
-                        }
-                        .labelsHidden()
-                        .fixedSize()
-                        .disabled(!power.safetyEnabled)
-                    }
-                    Text(power.safetyEnabled && !power.passwordFree
-                         ? "Needs “Don't ask for my password” to work."
-                         : "Turns “Stay on” off on low battery or if the Mac gets hot.")
-                        .font(.caption)
-                        .foregroundStyle(power.safetyEnabled && !power.passwordFree ? .orange : .secondary)
-                }
-                .padding(.horizontal, 4)
-                .padding(.bottom, 4)
-            } label: { Label("Lid", systemImage: "laptopcomputer") }
-
-            // Power now
-            GroupBox {
-                HStack {
-                    Button { power.sleepNow() } label: { Label("Sleep", systemImage: "moon.fill") }
-                    Button { power.lockScreen() } label: { Label("Screen off", systemImage: "display") }
-                }
-                HStack {
-                    Button { power.restart() } label: { Label("Restart", systemImage: "arrow.counterclockwise") }
-                    Button(role: .destructive) { power.shutDown() } label: { Label("Shut Down", systemImage: "power") }
-                }
-            } label: { Label("Power now", systemImage: "bolt.fill") }
-
-            // Schedule
-            GroupBox {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Toggle("Turn on at", isOn: $schedOn)
-                        Spacer()
-                        DatePicker("", selection: dateBinding($onTimeInterval), displayedComponents: .hourAndMinute)
-                            .labelsHidden().disabled(!schedOn)
-                    }
-                    HStack {
-                        Toggle("Shut down at", isOn: $schedOff)
-                        Spacer()
-                        DatePicker("", selection: dateBinding($offTimeInterval), displayedComponents: .hourAndMinute)
-                            .labelsHidden().disabled(!schedOff)
-                    }
-                    HStack(spacing: 4) {
-                        ForEach(Weekday.allCases, id: \.self) { day in
-                            Toggle(day.short, isOn: dayBinding(day))
-                                .toggleStyle(.button)
-                                .controlSize(.small)
-                        }
-                    }
-                    HStack {
-                        Button("Save schedule") {
-                            power.applySchedule(
-                                powerOn: schedOn, onTime: Date(timeIntervalSinceReferenceDate: onTimeInterval),
-                                powerOff: schedOff, offTime: Date(timeIntervalSinceReferenceDate: offTimeInterval),
-                                days: days)
-                        }
-                        Button("Clear") { power.cancelSchedule() }
-                    }
-                    Text("On Apple Silicon Macs, “Turn on” wakes the Mac from sleep but can't start it from fully shut down.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text(power.scheduleSummary)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(4)
-            } label: { Label("Schedule", systemImage: "calendar") }
-
-            // Password
-            GroupBox {
-                Toggle(isOn: Binding(
-                    get: { power.passwordFree },
-                    set: { power.setPasswordFree($0) })
-                ) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Don't ask for my password")
-                        Text(power.passwordFree
-                             ? "Lid and schedule changes apply instantly."
-                             : "Enter your password once to stop the prompts.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .toggleStyle(.switch)
-                .padding(4)
-
-                Toggle(isOn: Binding(
-                    get: { power.startAtLogin },
-                    set: { power.setStartAtLogin($0) })
-                ) {
-                    Text("Start at login")
-                }
-                .toggleStyle(.switch)
-                .padding(4)
-            } label: { Label("Settings", systemImage: "gearshape.fill") }
-
-            if let version = power.availableUpdate {
-                HStack {
-                    Image(systemName: "arrow.down.circle.fill").foregroundStyle(.blue)
-                    Text("Version \(version) is available")
-                    Spacer()
-                    Button("Download") { power.openUpdate() }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                }
-                .padding(8)
-                .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+        VStack(alignment: .leading, spacing: 12) {
+            switch page {
+            case .main: mainPage
+            case .schedule: schedulePage
+            case .settings: settingsPage
             }
 
             if let msg = power.message {
-                Text(msg).font(.caption).foregroundStyle(.secondary)
+                Text(msg)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .transition(.opacity)
+            }
+        }
+        .padding(12)
+        .frame(width: 300)
+        .animation(.easeInOut(duration: 0.15), value: page)
+        .animation(.easeInOut(duration: 0.2), value: power.message)
+        .onAppear { power.refresh() }
+    }
+
+    // MARK: Main page
+
+    private var mainPage: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Lid Control").font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Button { page = .settings } label: {
+                    Image(systemName: "gearshape").font(.system(size: 13))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Settings")
             }
 
+            StayOnTile(
+                isOn: Binding(get: { power.sleepDisabled },
+                              set: { power.setStayAwakeWithLidClosed($0) }),
+                shortcut: power.shortcutEnabled ? PowerController.shortcutLabel : nil)
+
+            if power.sleepDisabled && power.safetyEnabled && !power.passwordFree {
+                Button { page = .settings } label: {
+                    Label("Safety cut-off needs password-free mode", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                .buttonStyle(.plain)
+            }
+
+            HStack(spacing: 0) {
+                CircleButton(symbol: "moon.fill", title: "Sleep") { power.sleepNow() }
+                CircleButton(symbol: "display", title: "Screen off") { power.lockScreen() }
+                CircleButton(symbol: "arrow.counterclockwise", title: "Restart") { power.restart() }
+                CircleButton(symbol: "power", title: "Shut down", tint: .red) { power.shutDown() }
+            }
+
+            NavRow(symbol: "calendar", title: "Schedule", value: scheduleText) { page = .schedule }
+
+            if let version = power.availableUpdate {
+                Button { power.openUpdate() } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.down.circle.fill")
+                        Text("Update to \(version)")
+                        Spacer()
+                        Image(systemName: "arrow.up.right").font(.system(size: 10, weight: .semibold))
+                    }
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10).padding(.vertical, 7)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.accentColor))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var scheduleText: String {
+        guard power.hasSchedule else { return "Off" }
+        let f = DateFormatter()
+        f.timeStyle = .short
+        var parts: [String] = []
+        if schedOn { parts.append("On \(f.string(from: Date(timeIntervalSinceReferenceDate: onTimeInterval)))") }
+        if schedOff { parts.append("Off \(f.string(from: Date(timeIntervalSinceReferenceDate: offTimeInterval)))") }
+        return parts.isEmpty ? "On" : parts.joined(separator: " · ")
+    }
+
+    // MARK: Schedule page
+
+    private var schedulePage: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            PageHeader(title: "Schedule") { page = .main }
+
+            Card {
+                SettingRow(title: "Turn on") {
+                    DatePicker("", selection: dateBinding($onTimeInterval), displayedComponents: .hourAndMinute)
+                        .labelsHidden().fixedSize().disabled(!schedOn).opacity(schedOn ? 1 : 0.4)
+                    Toggle("", isOn: $schedOn).toggleStyle(.switch).labelsHidden().controlSize(.mini)
+                }
+                RowDivider()
+                SettingRow(title: "Shut down") {
+                    DatePicker("", selection: dateBinding($offTimeInterval), displayedComponents: .hourAndMinute)
+                        .labelsHidden().fixedSize().disabled(!schedOff).opacity(schedOff ? 1 : 0.4)
+                    Toggle("", isOn: $schedOff).toggleStyle(.switch).labelsHidden().controlSize(.mini)
+                }
+                RowDivider()
+                HStack(spacing: 0) {
+                    ForEach(Weekday.allCases, id: \.self) { day in
+                        DayChip(letter: day.letter, isOn: dayBinding(day))
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                .padding(.horizontal, 6).padding(.vertical, 8)
+            }
+
+            Text("On Apple Silicon, “Turn on” wakes the Mac from sleep but can't start it from fully shut down.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
             HStack {
+                Button("Clear") { power.cancelSchedule() }
+                    .disabled(!power.hasSchedule)
+                Spacer()
+                Button("Save") {
+                    power.applySchedule(
+                        powerOn: schedOn, onTime: Date(timeIntervalSinceReferenceDate: onTimeInterval),
+                        powerOff: schedOff, offTime: Date(timeIntervalSinceReferenceDate: offTimeInterval),
+                        days: days)
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+            }
+            .controlSize(.small)
+        }
+    }
+
+    // MARK: Settings page
+
+    private var settingsPage: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            PageHeader(title: "Settings") { page = .main }
+
+            Card {
+                SettingRow(title: "Keyboard shortcut", detail: PowerController.shortcutLabel) {
+                    Toggle("", isOn: $power.shortcutEnabled).toggleStyle(.switch).labelsHidden().controlSize(.mini)
+                }
+                RowDivider()
+                SettingRow(title: "Safety cut-off",
+                           detail: power.safetyEnabled && !power.passwordFree
+                               ? "Needs “Don't ask for password”"
+                               : "Low battery or overheating",
+                           detailIsWarning: power.safetyEnabled && !power.passwordFree) {
+                    Picker("", selection: safetyBinding) {
+                        Text("Off").tag(0)
+                        Divider()
+                        ForEach(PowerController.batteryLimitChoices, id: \.self) { Text("Below \($0)%").tag($0) }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                }
+            }
+
+            Card {
+                SettingRow(title: "Don't ask for password", detail: "Changes apply instantly") {
+                    Toggle("", isOn: Binding(get: { power.passwordFree },
+                                             set: { power.setPasswordFree($0) }))
+                        .toggleStyle(.switch).labelsHidden().controlSize(.mini)
+                }
+                RowDivider()
+                SettingRow(title: "Start at login") {
+                    Toggle("", isOn: Binding(get: { power.startAtLogin },
+                                             set: { power.setStartAtLogin($0) }))
+                        .toggleStyle(.switch).labelsHidden().controlSize(.mini)
+                }
+            }
+
+            HStack(spacing: 6) {
                 Text("Version \(Updates.currentVersion)")
-                    .font(.caption)
                     .foregroundStyle(.secondary)
                 Button("Check for updates") {
                     Task { await power.checkForUpdates(userInitiated: true) }
                 }
                 .buttonStyle(.link)
-                .font(.caption)
                 Spacer()
                 Button("Quit") { power.quit() }
+                    .controlSize(.small)
             }
+            .font(.caption)
         }
-        .padding(14)
-        .frame(width: 340)
-        .onAppear { power.refresh() }
+    }
+
+    // MARK: Bindings
+
+    private var safetyBinding: Binding<Int> {
+        Binding(
+            get: { power.safetyEnabled ? power.batteryLimit : 0 },
+            set: { value in
+                if value == 0 {
+                    power.safetyEnabled = false
+                } else {
+                    power.batteryLimit = value
+                    power.safetyEnabled = true
+                }
+            })
     }
 
     private func dateBinding(_ storage: Binding<Double>) -> Binding<Date> {
@@ -794,6 +844,171 @@ struct MenuContent: View {
                 if on { d.insert(day) } else { d.remove(day) }
                 daysRaw = d.map { String($0.rawValue) }.sorted().joined(separator: ",")
             })
+    }
+}
+
+// MARK: - Building blocks
+
+/// The main "Stay on with lid closed" tile, in the style of Control Center.
+struct StayOnTile: View {
+    @Binding var isOn: Bool
+    let shortcut: String?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: isOn ? "cup.and.saucer.fill" : "moon.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(isOn ? Color.white : Color.primary)
+                .frame(width: 30, height: 30)
+                .background(Circle().fill(isOn ? Color.orange : Color.primary.opacity(0.1)))
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Stay on with lid closed")
+                    .font(.system(size: 13, weight: .medium))
+                Text(isOn ? "Keeps running when shut" : "Sleeps when shut")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 4)
+
+            Toggle("", isOn: $isOn)
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .controlSize(.small)
+                .help(shortcut.map { "Shortcut: \($0)" } ?? "")
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.05)))
+    }
+}
+
+/// Round icon button with a small label underneath.
+struct CircleButton: View {
+    let symbol: String
+    let title: String
+    var tint: Color = .primary
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 5) {
+                Image(systemName: symbol)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(tint)
+                    .frame(width: 34, height: 34)
+                    .background(Circle().fill(Color.primary.opacity(hovering ? 0.14 : 0.07)))
+                Text(title)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+    }
+}
+
+/// A tappable row that opens another page.
+struct NavRow: View {
+    let symbol: String
+    let title: String
+    let value: String
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 16)
+                Text(title)
+                Spacer()
+                Text(value).foregroundStyle(.secondary).lineLimit(1)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .font(.system(size: 13))
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.primary.opacity(hovering ? 0.09 : 0.05)))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+    }
+}
+
+struct PageHeader: View {
+    let title: String
+    let back: () -> Void
+
+    var body: some View {
+        Button(action: back) {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold))
+                Text(title).font(.system(size: 13, weight: .semibold))
+                Spacer()
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut(.cancelAction)
+    }
+}
+
+/// Rounded group of rows, like System Settings.
+struct Card<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(spacing: 0) { content }
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.05)))
+    }
+}
+
+struct SettingRow<Trailing: View>: View {
+    let title: String
+    var detail: String? = nil
+    var detailIsWarning = false
+    @ViewBuilder let trailing: Trailing
+
+    var body: some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.system(size: 13))
+                if let detail {
+                    Text(detail)
+                        .font(.system(size: 11))
+                        .foregroundStyle(detailIsWarning ? Color.orange : Color.secondary)
+                }
+            }
+            Spacer(minLength: 4)
+            trailing
+        }
+        .padding(.horizontal, 10).padding(.vertical, 7)
+    }
+}
+
+struct RowDivider: View {
+    var body: some View { Divider().padding(.leading, 10) }
+}
+
+struct DayChip: View {
+    let letter: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Button { isOn.toggle() } label: {
+            Text(letter)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(isOn ? Color.white : Color.secondary)
+                .frame(width: 26, height: 26)
+                .background(Circle().fill(isOn ? Color.accentColor : Color.primary.opacity(0.08)))
+        }
+        .buttonStyle(.plain)
     }
 }
 
