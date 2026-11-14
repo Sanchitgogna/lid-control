@@ -286,6 +286,8 @@ final class PowerController: ObservableObject {
     @Published var sleepDisabled = false
     @Published var scheduleSummary = ""
     @Published var hasSchedule = false
+    /// Which page of the panel is showing.
+    @Published var page: PanelPage = .main
     /// Short status line under the panel; fades out after a few seconds.
     @Published var message: String? {
         didSet { scheduleMessageClear() }
@@ -606,9 +608,10 @@ enum Weekday: Int, CaseIterable, Hashable {
 
 struct MenuContent: View {
     @SwiftUI.EnvironmentObject var power: PowerController
-    @SwiftUI.State private var page: Page = .main
-
-    enum Page { case main, schedule, settings }
+    private var page: PanelPage {
+        get { power.page }
+        nonmutating set { power.page = newValue }
+    }
 
     @SwiftUI.AppStorage("schedOn") private var schedOn = false
     @SwiftUI.AppStorage("schedOff") private var schedOff = false
@@ -640,7 +643,10 @@ struct MenuContent: View {
         .frame(width: 300)
         .animation(.easeInOut(duration: 0.15), value: page)
         .animation(.easeInOut(duration: 0.2), value: power.message)
-        .onAppear { power.refresh() }
+        .onAppear {
+            power.page = .main
+            power.refresh()
+        }
     }
 
     // MARK: Main page
@@ -847,7 +853,18 @@ struct MenuContent: View {
     }
 }
 
+enum PanelPage { case main, schedule, settings }
+
 // MARK: - Building blocks
+
+/// Gentle press feedback without any view state.
+struct PressableStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.6 : 1)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+    }
+}
 
 /// The main "Stay on with lid closed" tile, in the style of Control Center.
 struct StayOnTile: View {
@@ -889,7 +906,6 @@ struct CircleButton: View {
     let title: String
     var tint: Color = .primary
     let action: () -> Void
-    @SwiftUI.State private var hovering = false
 
     var body: some View {
         Button(action: action) {
@@ -898,7 +914,7 @@ struct CircleButton: View {
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(tint)
                     .frame(width: 34, height: 34)
-                    .background(Circle().fill(Color.primary.opacity(hovering ? 0.14 : 0.07)))
+                    .background(Circle().fill(Color.primary.opacity(0.08)))
                 Text(title)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
@@ -906,8 +922,7 @@ struct CircleButton: View {
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
+        .buttonStyle(PressableStyle())
     }
 }
 
@@ -917,7 +932,6 @@ struct NavRow: View {
     let title: String
     let value: String
     let action: () -> Void
-    @SwiftUI.State private var hovering = false
 
     var body: some View {
         Button(action: action) {
@@ -933,11 +947,10 @@ struct NavRow: View {
             .font(.system(size: 13))
             .padding(.horizontal, 10).padding(.vertical, 8)
             .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.primary.opacity(hovering ? 0.09 : 0.05)))
+                .fill(Color.primary.opacity(0.06)))
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
+        .buttonStyle(PressableStyle())
     }
 }
 
