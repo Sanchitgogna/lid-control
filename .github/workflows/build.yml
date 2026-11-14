@@ -19,6 +19,14 @@ permissions:
   contents: write
 
 jobs:
+  # Compile on the newest macOS too, so new-SDK errors show up here first.
+  check:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+      - name: Compile with the newest Xcode
+        run: swiftc --version && UNIVERSAL=1 bash build.sh
+
   build:
     runs-on: macos-15
     steps:
