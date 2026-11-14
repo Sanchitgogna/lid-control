@@ -9,7 +9,7 @@ import ServiceManagement
 
 @main
 struct LidControlApp: App {
-    @StateObject private var power = PowerController()
+    @SwiftUI.StateObject private var power = PowerController()
 
     var body: some Scene {
         MenuBarExtra {
@@ -605,16 +605,16 @@ enum Weekday: Int, CaseIterable, Hashable {
 // MARK: - UI
 
 struct MenuContent: View {
-    @EnvironmentObject var power: PowerController
-    @State private var page: Page = .main
+    @SwiftUI.EnvironmentObject var power: PowerController
+    @SwiftUI.State private var page: Page = .main
 
     enum Page { case main, schedule, settings }
 
-    @AppStorage("schedOn") private var schedOn = false
-    @AppStorage("schedOff") private var schedOff = false
-    @AppStorage("onTime") private var onTimeInterval: Double = PowerDefaults.time(hour: 8)
-    @AppStorage("offTime") private var offTimeInterval: Double = PowerDefaults.time(hour: 23)
-    @AppStorage("days") private var daysRaw = "0,1,2,3,4"
+    @SwiftUI.AppStorage("schedOn") private var schedOn = false
+    @SwiftUI.AppStorage("schedOff") private var schedOff = false
+    @SwiftUI.AppStorage("onTime") private var onTimeInterval: Double = PowerDefaults.time(hour: 8)
+    @SwiftUI.AppStorage("offTime") private var offTimeInterval: Double = PowerDefaults.time(hour: 23)
+    @SwiftUI.AppStorage("days") private var daysRaw = "0,1,2,3,4"
 
     private var days: Set<Weekday> {
         Set(daysRaw.split(separator: ",").compactMap { Int($0) }.compactMap(Weekday.init(rawValue:)))
@@ -851,7 +851,7 @@ struct MenuContent: View {
 
 /// The main "Stay on with lid closed" tile, in the style of Control Center.
 struct StayOnTile: View {
-    @Binding var isOn: Bool
+    @SwiftUI.Binding var isOn: Bool
     let shortcut: String?
 
     var body: some View {
@@ -889,7 +889,7 @@ struct CircleButton: View {
     let title: String
     var tint: Color = .primary
     let action: () -> Void
-    @State private var hovering = false
+    @SwiftUI.State private var hovering = false
 
     var body: some View {
         Button(action: action) {
@@ -917,7 +917,7 @@ struct NavRow: View {
     let title: String
     let value: String
     let action: () -> Void
-    @State private var hovering = false
+    @SwiftUI.State private var hovering = false
 
     var body: some View {
         Button(action: action) {
@@ -998,7 +998,7 @@ struct RowDivider: View {
 
 struct DayChip: View {
     let letter: String
-    @Binding var isOn: Bool
+    @SwiftUI.Binding var isOn: Bool
 
     var body: some View {
         Button { isOn.toggle() } label: {
