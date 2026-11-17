@@ -3,6 +3,7 @@ import AppKit
 import Carbon.HIToolbox
 import IOKit
 import IOKit.ps
+import IOKit.pwr_mgt
 import ServiceManagement
 
 // MARK: - App
@@ -283,7 +284,17 @@ struct HUDView: View {
 
 @MainActor
 final class PowerController: ObservableObject {
-    @Published var sleepDisabled = false
+    @Published var sleepDisabled = false {
+        didSet { updateScreenAssertion() }
+    }
+    /// Also keep the display awake (no lock screen) while "Stay on" is active.
+    @Published var keepScreenOn = UserDefaults.standard.object(forKey: "keepScreenOn") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(keepScreenOn, forKey: "keepScreenOn")
+            updateScreenAssertion()
+        }
+    }
+    private var screenAssertion: IOPMAssertionID = 0
     @Published var scheduleSummary = ""
     @Published var hasSchedule = false
     /// Which page of the panel is showing.
@@ -333,6 +344,26 @@ final class PowerController: ObservableObject {
     static let shortcutLabel = "⌥⌘L"
     private var hotKey: HotKey?
     private var pollTask: Task<Void, Never>?
+
+    /// "Stay on" (pmset disablesleep) stops the *system* sleeping, but the display
+    /// still sleeps on its idle timer, which locks the Mac. While "Stay on" is active
+    /// we hold a display-sleep assertion, like a video player does. macOS releases it
+    /// automatically if the app quits.
+    private func updateScreenAssertion() {
+        let want = sleepDisabled && keepScreenOn
+        if want && screenAssertion == 0 {
+            var id: IOPMAssertionID = 0
+            let result = IOPMAssertionCreateWithName(
+                kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
+                IOPMAssertionLevel(kIOPMAssertionLevelOn),
+                "Lid Control: Stay on is active" as CFString,
+                &id)
+            if result == kIOReturnSuccess { screenAssertion = id }
+        } else if !want && screenAssertion != 0 {
+            IOPMAssertionRelease(screenAssertion)
+            screenAssertion = 0
+        }
+    }
 
     init() {
         refresh()
@@ -773,6 +804,10 @@ struct MenuContent: View {
             PageHeader(title: "Settings") { page = .main }
 
             Card {
+                SettingRow(title: "Keep screen on", detail: "While Stay on is active") {
+                    Toggle("", isOn: $power.keepScreenOn).toggleStyle(.switch).labelsHidden().controlSize(.mini)
+                }
+                RowDivider()
                 SettingRow(title: "Keyboard shortcut", detail: PowerController.shortcutLabel) {
                     Toggle("", isOn: $power.shortcutEnabled).toggleStyle(.switch).labelsHidden().controlSize(.mini)
                 }
@@ -882,7 +917,7 @@ struct StayOnTile: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("Stay on with lid closed")
                     .font(.system(size: 13, weight: .medium))
-                Text(isOn ? "Keeps running when shut" : "Sleeps when shut")
+                Text(isOn ? "Won't sleep or lock" : "Sleeps when shut")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }

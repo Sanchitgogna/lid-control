@@ -19,6 +19,7 @@
 ## Features
 
 - **Stay on when the lid is closed:** keep music, downloads or a server running with the lid shut, even on battery. The menu bar icon turns into a ☕ while it's on.
+- **No lock screen:** while Stay on is active the screen also stays awake with the lid open, so the Mac doesn't dim and lock (can be turned off in Settings).
 - **Safety cut-off:** switches "Stay on" off and sleeps the Mac if the battery runs low (10–30%, you choose) or the Mac gets hot.
 - **Quit reminder:** warns you if you quit while "Stay on" is active, and reminds you on launch if it was left on.
 - **⌥⌘L keyboard shortcut:** flip the lid setting from any app, with an on-screen confirmation.
@@ -55,6 +56,7 @@ Lid Control is a thin front end for macOS's own `pmset` power tool:
 | --- | --- |
 | Stay on with lid closed | `pmset -a disablesleep 1` (and `0` to turn it off) |
 | Schedule | `pmset repeat wakeorpoweron … shutdown …` |
+| Keep screen on | an IOKit display-sleep assertion, held only while Stay on is active |
 | Sleep / Screen off | `pmset sleepnow` / `pmset displaysleepnow` |
 | Restart / Shut Down | asks System Events, so apps can save your work first |
 
