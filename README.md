@@ -18,14 +18,12 @@
 
 ## Features
 
-- **Stay on when the lid is closed:** keep music, downloads or a server running with the lid shut, even on battery. The menu bar icon turns into a ☕ while it's on.
-- **No lock screen:** while Stay on is active the screen also stays awake with the lid open, so the Mac doesn't dim and lock (can be turned off in Settings).
-- **Safety cut-off:** switches "Stay on" off and sleeps the Mac if the battery runs low (10–30%, you choose) or the Mac gets hot.
-- **Quit reminder:** warns you if you quit while "Stay on" is active, and reminds you on launch if it was left on.
-- **⌥⌘L keyboard shortcut:** flip the lid setting from any app, with an on-screen confirmation.
-- **Power buttons:** Sleep, Screen off, Restart and Shut Down.
+- **Keep Mac awake:** one big switch. While it's on, your Mac won't sleep or lock, with the lid open or closed, even on battery. The menu bar icon turns into a ☕.
+- **⌥⌘L shortcut:** switch it from any app, with an on-screen confirmation.
+- **Battery safety:** turns Keep awake off and sleeps the Mac if the battery runs low (10–30%, you choose) or the Mac gets hot.
+- **Quit reminder:** warns you if you quit while Keep awake is on, and reminds you on launch if it was left on.
 - **Schedule:** wake or turn the Mac on and shut it down at set times on chosen days.
-- **No password prompts (optional):** enter your password once and lid and schedule changes apply instantly.
+- **Skip password prompts (optional):** approve once and the switch works instantly.
 - **Start at login** and **update alerts** when a new version is released here.
 
 ## Install
@@ -54,15 +52,13 @@ Lid Control is a thin front end for macOS's own `pmset` power tool:
 
 | Feature | What it runs |
 | --- | --- |
-| Stay on with lid closed | `pmset -a disablesleep 1` (and `0` to turn it off) |
+| Keep awake | `pmset -a disablesleep 1` (and `0` to turn it off) |
 | Schedule | `pmset repeat wakeorpoweron … shutdown …` |
-| Keep screen on | an IOKit display-sleep assertion, held only while Stay on is active |
-| Sleep / Screen off | `pmset sleepnow` / `pmset displaysleepnow` |
-| Restart / Shut Down | asks System Events, so apps can save your work first |
+| Keep screen on | an IOKit display-sleep assertion, held only while Keep awake is on |
 
-**"Don't ask for my password"** adds a single rule at `/etc/sudoers.d/lidcontrol` that lets *your* account run only those exact `pmset` commands without a password. Nothing else gets elevated rights. Turning the switch off deletes the rule.
+**"Skip password prompts"** adds a single rule at `/etc/sudoers.d/lidcontrol` that lets *your* account run only those exact `pmset` commands without a password. Nothing else gets elevated rights. Turning the switch off deletes the rule.
 
-> ⚠️ With "Stay on" enabled your Mac keeps running in a bag. Turn it off before you pack the Mac away, or it may get hot.
+> ⚠️ With Keep awake on, your Mac keeps running in a bag. Turn it off before you pack the Mac away, or rely on Battery safety.
 
 ## Build from source
 
@@ -78,7 +74,7 @@ bash install.command
 
 ## Uninstall
 
-1. In the panel, turn **off** "Stay on when lid is closed", "Don't ask for my password" and "Start at login".
+1. In the panel, turn **off** Keep awake, and in Settings turn off "Skip password prompts" and "Start at login".
 2. Quit Lid Control and drag it from Applications to the Bin.
 
 ## Releasing a new version (maintainers)

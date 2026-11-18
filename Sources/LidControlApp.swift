@@ -356,7 +356,7 @@ final class PowerController: ObservableObject {
             let result = IOPMAssertionCreateWithName(
                 kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
                 IOPMAssertionLevel(kIOPMAssertionLevelOn),
-                "Lid Control: Stay on is active" as CFString,
+                "Lid Control: Keep awake is on" as CFString,
                 &id)
             if result == kIOReturnSuccess { screenAssertion = id }
         } else if !want && screenAssertion != 0 {
@@ -371,10 +371,10 @@ final class PowerController: ObservableObject {
 
         // Remind the user if "Stay on" was left on (e.g. after quitting or restarting).
         if sleepDisabled {
-            message = "Heads up: “Stay on” was already ON when Lid Control started."
+            message = "Heads up: Keep awake was already on when Lid Control started."
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
-                HUD.show(symbol: "cup.and.saucer.fill", title: "Stay on is still ON",
+                HUD.show(symbol: "cup.and.saucer.fill", title: "Keep awake is still on",
                          subtitle: "Your Mac won't sleep when the lid closes")
             }
         }
@@ -421,16 +421,16 @@ final class PowerController: ObservableObject {
         guard passwordFree, PasswordFree.run(["-a", "disablesleep", "0"]) else {
             if !warnedSafetyNeedsPermission {
                 warnedSafetyNeedsPermission = true
-                message = "\(reason). Turn on “Don't ask for my password” so Lid Control can switch “Stay on” off by itself."
-                HUD.show(symbol: "exclamationmark.triangle.fill", title: "Turn off “Stay on”",
+                message = "\(reason). Turn on “Skip password prompts” in Settings so Lid Control can switch Keep awake off by itself."
+                HUD.show(symbol: "exclamationmark.triangle.fill", title: "Turn off Keep awake",
                          subtitle: reason)
             }
             return
         }
 
         sleepDisabled = SystemInfo.sleepDisabled
-        message = "“Stay on” was turned off automatically. \(reason)."
-        HUD.show(symbol: "exclamationmark.triangle.fill", title: "Stay on turned OFF", subtitle: reason)
+        message = "Keep awake was turned off automatically. \(reason)."
+        HUD.show(symbol: "exclamationmark.triangle.fill", title: "Keep awake turned off", subtitle: reason)
         if SystemInfo.lidClosed {
             Shell.run("/usr/bin/pmset", ["sleepnow"])
         }
@@ -481,7 +481,7 @@ final class PowerController: ObservableObject {
         if sleepDisabled {
             NSApp.activate(ignoringOtherApps: true)
             let alert = NSAlert()
-            alert.messageText = "“Stay on when lid is closed” is still ON"
+            alert.messageText = "Keep awake is still on"
             alert.informativeText = "If you quit, your Mac will keep running with the lid closed and there'll be no menu bar icon to remind you."
             alert.addButton(withTitle: "Turn Off and Quit")
             alert.addButton(withTitle: "Keep On and Quit")
@@ -516,10 +516,10 @@ final class PowerController: ObservableObject {
         setStayAwakeWithLidClosed(!before)
         guard sleepDisabled != before else { return } // cancelled or failed
         if sleepDisabled {
-            HUD.show(symbol: "cup.and.saucer.fill", title: "Stay on: ON",
+            HUD.show(symbol: "cup.and.saucer.fill", title: "Keep awake: ON",
                      subtitle: "Mac keeps running with the lid closed")
         } else {
-            HUD.show(symbol: "moon.fill", title: "Stay on: OFF",
+            HUD.show(symbol: "moon.fill", title: "Keep awake: OFF",
                      subtitle: "Mac sleeps when the lid closes")
         }
     }
@@ -558,31 +558,10 @@ final class PowerController: ObservableObject {
             message = err
         } else {
             message = on
-                ? "Your Mac will stay on with the lid closed."
+                ? "Your Mac will stay awake, even with the lid closed."
                 : "Your Mac will sleep when the lid closes."
         }
         refresh()
-    }
-
-    // Immediate actions
-
-    func sleepNow() {
-        Shell.run("/usr/bin/pmset", ["sleepnow"])
-    }
-
-    func lockScreen() {
-        // Sleeping the display locks the Mac if "require password" is on.
-        Shell.run("/usr/bin/pmset", ["displaysleepnow"])
-    }
-
-    func restart() {
-        guard confirm("Restart your Mac?", button: "Restart") else { return }
-        message = Shell.appleScript("tell application \"System Events\" to restart")
-    }
-
-    func shutDown() {
-        guard confirm("Shut down your Mac?", button: "Shut Down") else { return }
-        message = Shell.appleScript("tell application \"System Events\" to shut down")
     }
 
     // Scheduled power on / off
@@ -616,15 +595,6 @@ final class PowerController: ObservableObject {
         return f.string(from: date)
     }
 
-    private func confirm(_ text: String, button: String) -> Bool {
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.messageText = text
-        alert.informativeText = "Unsaved work in open apps may ask you to save first."
-        alert.addButton(withTitle: button)
-        alert.addButton(withTitle: "Cancel")
-        return alert.runModal() == .alertFirstButtonReturn
-    }
 }
 
 enum Weekday: Int, CaseIterable, Hashable {
@@ -649,6 +619,7 @@ struct MenuContent: View {
     @SwiftUI.AppStorage("onTime") private var onTimeInterval: Double = PowerDefaults.time(hour: 8)
     @SwiftUI.AppStorage("offTime") private var offTimeInterval: Double = PowerDefaults.time(hour: 23)
     @SwiftUI.AppStorage("days") private var daysRaw = "0,1,2,3,4"
+    @SwiftUI.AppStorage("setupDismissed") private var setupDismissed = false
 
     private var days: Set<Weekday> {
         Set(daysRaw.split(separator: ",").compactMap { Int($0) }.compactMap(Weekday.init(rawValue:)))
@@ -695,25 +666,23 @@ struct MenuContent: View {
                 .help("Settings")
             }
 
-            StayOnTile(
+            KeepAwakeTile(
                 isOn: Binding(get: { power.sleepDisabled },
-                              set: { power.setStayAwakeWithLidClosed($0) }),
-                shortcut: power.shortcutEnabled ? PowerController.shortcutLabel : nil)
+                              set: { power.setStayAwakeWithLidClosed($0) }))
 
             if power.sleepDisabled && power.safetyEnabled && !power.passwordFree {
                 Button { page = .settings } label: {
-                    Label("Safety cut-off needs password-free mode", systemImage: "exclamationmark.triangle.fill")
+                    Label("Battery safety needs password-free mode", systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
                 .buttonStyle(.plain)
             }
 
-            HStack(spacing: 0) {
-                CircleButton(symbol: "moon.fill", title: "Sleep") { power.sleepNow() }
-                CircleButton(symbol: "display", title: "Screen off") { power.lockScreen() }
-                CircleButton(symbol: "arrow.counterclockwise", title: "Restart") { power.restart() }
-                CircleButton(symbol: "power", title: "Shut down", tint: .red) { power.shutDown() }
+            if !power.passwordFree && !setupDismissed {
+                SetupCard(
+                    setUp: { power.setPasswordFree(true) },
+                    dismiss: { setupDismissed = true })
             }
 
             NavRow(symbol: "calendar", title: "Schedule", value: scheduleText) { page = .schedule }
@@ -733,6 +702,13 @@ struct MenuContent: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+            }
+
+            if power.shortcutEnabled {
+                Text("Tip: press \(PowerController.shortcutLabel) to switch from any app")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity)
             }
         }
     }
@@ -804,7 +780,7 @@ struct MenuContent: View {
             PageHeader(title: "Settings") { page = .main }
 
             Card {
-                SettingRow(title: "Keep screen on", detail: "While Stay on is active") {
+                SettingRow(title: "Keep screen on", detail: "While Keep awake is on") {
                     Toggle("", isOn: $power.keepScreenOn).toggleStyle(.switch).labelsHidden().controlSize(.mini)
                 }
                 RowDivider()
@@ -812,9 +788,9 @@ struct MenuContent: View {
                     Toggle("", isOn: $power.shortcutEnabled).toggleStyle(.switch).labelsHidden().controlSize(.mini)
                 }
                 RowDivider()
-                SettingRow(title: "Safety cut-off",
+                SettingRow(title: "Battery safety",
                            detail: power.safetyEnabled && !power.passwordFree
-                               ? "Needs “Don't ask for password”"
+                               ? "Needs “Skip password prompts”"
                                : "Low battery or overheating",
                            detailIsWarning: power.safetyEnabled && !power.passwordFree) {
                     Picker("", selection: safetyBinding) {
@@ -828,7 +804,7 @@ struct MenuContent: View {
             }
 
             Card {
-                SettingRow(title: "Don't ask for password", detail: "Changes apply instantly") {
+                SettingRow(title: "Skip password prompts", detail: "The switch works instantly") {
                     Toggle("", isOn: Binding(get: { power.passwordFree },
                                              set: { power.setPasswordFree($0) }))
                         .toggleStyle(.switch).labelsHidden().controlSize(.mini)
@@ -901,63 +877,90 @@ struct PressableStyle: ButtonStyle {
     }
 }
 
-/// The main "Stay on with lid closed" tile, in the style of Control Center.
-struct StayOnTile: View {
+/// The big main switch. The whole card is clickable.
+struct KeepAwakeTile: View {
     @SwiftUI.Binding var isOn: Bool
-    let shortcut: String?
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: isOn ? "cup.and.saucer.fill" : "moon.fill")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(isOn ? Color.white : Color.primary)
-                .frame(width: 30, height: 30)
-                .background(Circle().fill(isOn ? Color.orange : Color.primary.opacity(0.1)))
+        Button { isOn.toggle() } label: {
+            HStack(spacing: 12) {
+                Image(systemName: isOn ? "sun.max.fill" : "moon.zzz.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(isOn ? Color.white : Color.secondary)
+                    .frame(width: 42, height: 42)
+                    .background(Circle().fill(isOn ? Color.orange : Color.primary.opacity(0.08)))
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Stay on with lid closed")
-                    .font(.system(size: 13, weight: .medium))
-                Text(isOn ? "Won't sleep or lock" : "Sleeps when shut")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Keep Mac awake")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text(isOn ? "On, even with the lid closed" : "Off, the Mac sleeps normally")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 4)
+
+                SwitchIndicator(isOn: isOn)
             }
-
-            Spacer(minLength: 4)
-
-            Toggle("", isOn: $isOn)
-                .toggleStyle(.switch)
-                .labelsHidden()
-                .controlSize(.small)
-                .help(shortcut.map { "Shortcut: \($0)" } ?? "")
-        }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.05)))
-    }
-}
-
-/// Round icon button with a small label underneath.
-struct CircleButton: View {
-    let symbol: String
-    let title: String
-    var tint: Color = .primary
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 5) {
-                Image(systemName: symbol)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(tint)
-                    .frame(width: 34, height: 34)
-                    .background(Circle().fill(Color.primary.opacity(0.08)))
-                Text(title)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity)
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(isOn ? Color.orange.opacity(0.14) : Color.primary.opacity(0.05)))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(isOn ? Color.orange.opacity(0.45) : Color.clear, lineWidth: 1))
             .contentShape(Rectangle())
         }
         .buttonStyle(PressableStyle())
+        .animation(.easeInOut(duration: 0.18), value: isOn)
+    }
+}
+
+/// A switch drawing that is part of the tile (the tile itself is the button).
+struct SwitchIndicator: View {
+    let isOn: Bool
+
+    var body: some View {
+        Capsule()
+            .fill(isOn ? Color.orange : Color.primary.opacity(0.18))
+            .frame(width: 38, height: 22)
+            .overlay(
+                Circle()
+                    .fill(Color.white)
+                    .shadow(color: .black.opacity(0.2), radius: 1, y: 0.5)
+                    .padding(2),
+                alignment: isOn ? .trailing : .leading)
+    }
+}
+
+/// One-time tip to stop password prompts.
+struct SetupCard: View {
+    let setUp: () -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "key.fill").foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Skip the password every time")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("Enter it once and the switch works instantly.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            HStack {
+                Spacer()
+                Button("Not now", action: dismiss)
+                Button("Set up", action: setUp)
+                    .buttonStyle(.borderedProminent)
+            }
+            .controlSize(.small)
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(Color.accentColor.opacity(0.08)))
     }
 }
 
